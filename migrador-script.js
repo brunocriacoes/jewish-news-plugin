@@ -8,6 +8,7 @@
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   function log(message) {
+	message = String(message).replace(/importado\s+\S+\s+/, 'importado como ');
     const panel = $('migrador-log');
     const time = new Date().toLocaleTimeString();
     panel.textContent = `[${time}] ${message}\n` + panel.textContent;
@@ -48,7 +49,7 @@
       log(`Importando: ${url}`);
       try {
         const data = await request('migrador_noticias_import_single_url', { url });
-        render(data); log(`HTTP ${data.http_code}: "${data.title}" importado.`);
+        render(data); log(`HTTP ${data.http_code}: "${data.title}" importado որպես ${data.content_type}${data.category ? ` — categoria: ${data.category}` : ''}.`);
       } catch (error) {
         if (error.data && error.data.busy) { log('Importação ocupada; nova tentativa em breve.'); await sleep(1000); continue; }
         if (error.data) render(error.data);

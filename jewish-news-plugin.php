@@ -167,6 +167,57 @@ function migrador_noticias_selector_to_xpath( $selector ) {
 	return '';
 }
 
+/**
+ * URLs /news/{slug} são notícias. As demais URLs do sitemap são tratadas como páginas.
+ * Altere MIGRATION_POST_PATH_PREFIX em config.php caso o site legado use outro prefixo.
+ */
+function migrador_noticias_get_content_type( $url ) {
+	$segments = array_values( array_filter( explode( '/', trim( (string) wp_parse_url( $url, PHP_URL_PATH ), '/' ) ) ) );
+	return ! empty( $segments[0] ) && MIGRATION_POST_PATH_PREFIX === sanitize_title( $segments[0] ) ? 'post' : 'page';
+}
+
+/**
+ * Recupera a última categoria navegável do breadcrumb, ignorando o link inicial e a própria página.
+ * Aceita as variações mais comuns de marcação: .breadcrumb, .breadcrumbs e nav com "breadcrumb".
+ */
+function migrador_noticias_get_breadcrumb_category( DOMXPath $xpath, $source_url ) {
+	$breadcrumb_links = $xpath->query( '//*[contains(concat(" ", normalize-space(@class), " "), " breadcrumb ") or contains(concat(" ", normalize-space(@class), " "), " breadcrumbs ") or @aria-label="breadcrumb" or contains(translate(@class, "BREADCRUMB", "breadcrumb"), "breadcrumb")]//a[@href]' );
+	if ( ! $breadcrumb_links || ! $breadcrumb_links->length ) {
+		return '';
+	}
+
+	$candidates = array();
+	$source_url = untrailingslashit( $source_url );
+	foreach ( $breadcrumb_links as $link ) {
+		$name = sanitize_text_field( trim( $link->textContent ) );
+		$href = untrailingslashit( trim( $link->getAttribute( 'href' ) ) );
+		if ( ! $name || ! $href || '/' === $href || $href === $source_url || preg_match( '#^https?://[^/]+$#i', $href ) ) {
+			continue;
+		}
+		$candidates[] = $name;
+	}
+
+	return ! empty( $candidates ) ? end( $candidates ) : '';
+}
+
+/** Localiza a categoria pelo slug/nome ou cria uma categoria nova para a notícia. */
+function migrador_noticias_get_or_create_category( $category_name ) {
+	$category_name = sanitize_text_field( $category_name );
+	if ( ! $category_name ) {
+		return 0;
+	}
+	$slug = sanitize_title( $category_name );
+	$term = get_category_by_slug( $slug );
+	if ( ! $term ) {
+		$term = get_term_by( 'name', $category_name, 'category' );
+	}
+	if ( $term && ! is_wp_error( $term ) ) {
+		return (int) $term->term_id;
+	}
+	$term_id = wp_insert_category( array( 'cat_name' => $category_name, 'category_nicename' => $slug ) );
+	return is_wp_error( $term_id ) ? 0 : (int) $term_id;
+}
+
 function migrador_noticias_finish_item( $url, $success, $details ) {
 	$queue = migrador_noticias_read_state( 'queue.json' );
 	$index = array_search( $url, $queue, true );
@@ -230,6 +281,9 @@ function migrador_noticias_import_single_url() {
 			$title = 'Notícia migrada';
 		}
 		$slug = sanitize_title( basename( untrailingslashit( (string) wp_parse_url( $url, PHP_URL_PATH ) ) ) );
+		$content_type = migrador_noticias_get_content_type( $url );
+		$category_name = 'post' === $content_type ? migrador_noticias_get_breadcrumb_category( $xpath, $url ) : '';
+		$category_id = $category_name ? migrador_noticias_get_or_create_category( $category_name ) : 0;
 		$image_node = $xpath->query( '//meta[@property="og:image"]/@content' )->item( 0 );
 		if ( ! $image_node ) {
 			$image_node = $xpath->query( './/img[@src]/@src', $container )->item( 0 );
@@ -239,12 +293,15 @@ function migrador_noticias_import_single_url() {
 			$image_url = (string) wp_parse_url( $url, PHP_URL_SCHEME ) . '://' . (string) wp_parse_url( $url, PHP_URL_HOST ) . '/' . ltrim( $image_url, '/' );
 		}
 
-		$existing = get_posts( array( 'post_type' => 'post', 'post_status' => 'any', 'meta_key' => '_url_origem_net', 'meta_value' => $url, 'fields' => 'ids', 'posts_per_page' => 1 ) );
-		$post_id = $existing ? (int) $existing[0] : wp_insert_post( array( 'post_title' => $title, 'post_content' => wp_kses_post( $content ), 'post_status' => 'publish', 'post_type' => 'post', 'post_name' => $slug ), true );
+		$existing = get_posts( array( 'post_type' => $content_type, 'post_status' => 'any', 'meta_key' => '_url_origem_net', 'meta_value' => $url, 'fields' => 'ids', 'posts_per_page' => 1 ) );
+		$post_id = $existing ? (int) $existing[0] : wp_insert_post( array( 'post_title' => $title, 'post_content' => wp_kses_post( $content ), 'post_status' => 'publish', 'post_type' => $content_type, 'post_name' => $slug ), true );
 		if ( is_wp_error( $post_id ) ) {
 			throw new Exception( $post_id->get_error_message() );
 		}
 		update_post_meta( $post_id, '_url_origem_net', $url );
+		if ( 'post' === $content_type && $category_id ) {
+			wp_set_post_categories( $post_id, array( $category_id ), false );
+		}
 
 		if ( $image_url && ! has_post_thumbnail( $post_id ) ) {
 			require_once ABSPATH . 'wp-admin/includes/media.php';
@@ -256,9 +313,9 @@ function migrador_noticias_import_single_url() {
 			}
 		}
 
-		migrador_noticias_finish_item( $url, true, array( 'post_id' => $post_id, 'title' => $title, 'http_code' => $http_code ) );
+		migrador_noticias_finish_item( $url, true, array( 'post_id' => $post_id, 'title' => $title, 'content_type' => $content_type, 'category' => $category_name, 'http_code' => $http_code ) );
 		migrador_noticias_release_lock( $lock );
-		wp_send_json_success( array_merge( migrador_noticias_status(), array( 'url' => $url, 'title' => $title, 'post_id' => $post_id, 'http_code' => $http_code, 'message' => 'Notícia importada.' ) ) );
+		wp_send_json_success( array_merge( migrador_noticias_status(), array( 'url' => $url, 'title' => $title, 'post_id' => $post_id, 'content_type' => $content_type, 'category' => $category_name, 'http_code' => $http_code, 'message' => 'Conteúdo importado.' ) ) );
 	} catch ( Exception $exception ) {
 		migrador_noticias_finish_item( $url, false, array( 'message' => $exception->getMessage() ) );
 		migrador_noticias_release_lock( $lock );
