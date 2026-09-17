@@ -159,6 +159,27 @@ function migrador_noticias_convert_to_utf8( $html ) {
 	return $html;
 }
 
+/** Converte uma URL de mídia relativa em URL absoluta usando a página de origem como referência. */
+function migrador_noticias_resolve_url( $raw_url, $page_url ) {
+	$raw_url = trim( html_entity_decode( (string) $raw_url ) );
+	if ( ! $raw_url ) {
+		return '';
+	}
+	if ( 0 === strpos( $raw_url, '//' ) ) {
+		return (string) wp_parse_url( $page_url, PHP_URL_SCHEME ) . ':' . $raw_url;
+	}
+	if ( wp_parse_url( $raw_url, PHP_URL_HOST ) ) {
+		return esc_url_raw( $raw_url );
+	}
+	$scheme = (string) wp_parse_url( $page_url, PHP_URL_SCHEME );
+	$host   = (string) wp_parse_url( $page_url, PHP_URL_HOST );
+	if ( 0 === strpos( $raw_url, '/' ) ) {
+		return esc_url_raw( $scheme . '://' . $host . $raw_url );
+	}
+	$directory = trailingslashit( dirname( (string) wp_parse_url( $page_url, PHP_URL_PATH ) ) );
+	return esc_url_raw( $scheme . '://' . $host . $directory . $raw_url );
+}
+
 function migrador_noticias_selector_to_xpath( $selector ) {
 	// A configuração aceita um seletor de classe simples, como .conten_site_content.
 	if ( 0 === strpos( $selector, '.' ) && preg_match( '/^\.([A-Za-z0-9_-]+)$/', $selector, $matches ) ) {
@@ -284,14 +305,15 @@ function migrador_noticias_import_single_url() {
 		$content_type = migrador_noticias_get_content_type( $url );
 		$category_name = 'post' === $content_type ? migrador_noticias_get_breadcrumb_category( $xpath, $url ) : '';
 		$category_id = $category_name ? migrador_noticias_get_or_create_category( $category_name ) : 0;
-		$image_node = $xpath->query( '//meta[@property="og:image"]/@content' )->item( 0 );
-		if ( ! $image_node ) {
-			$image_node = $xpath->query( './/img[@src]/@src', $container )->item( 0 );
+		// A imagem do conteúdo tem prioridade sobre og:image para garantir que a miniatura represente a notícia.
+		$content_image_node   = $xpath->query( './/img[@src]', $container )->item( 0 );
+		$content_image_source = $content_image_node ? $content_image_node->getAttribute( 'src' ) : '';
+		$image_source         = $content_image_source;
+		if ( ! $image_source ) {
+			$image_node   = $xpath->query( '//meta[@property="og:image"]/@content' )->item( 0 );
+			$image_source = $image_node ? $image_node->nodeValue : '';
 		}
-		$image_url = $image_node ? esc_url_raw( trim( $image_node->nodeValue ) ) : '';
-		if ( $image_url && ! wp_parse_url( $image_url, PHP_URL_HOST ) ) {
-			$image_url = (string) wp_parse_url( $url, PHP_URL_SCHEME ) . '://' . (string) wp_parse_url( $url, PHP_URL_HOST ) . '/' . ltrim( $image_url, '/' );
-		}
+		$image_url = migrador_noticias_resolve_url( $image_source, $url );
 
 		$existing = get_posts( array( 'post_type' => $content_type, 'post_status' => 'any', 'meta_key' => '_url_origem_net', 'meta_value' => $url, 'fields' => 'ids', 'posts_per_page' => 1 ) );
 		$post_id = $existing ? (int) $existing[0] : wp_insert_post( array( 'post_title' => $title, 'post_content' => wp_kses_post( $content ), 'post_status' => 'publish', 'post_type' => $content_type, 'post_name' => $slug ), true );
@@ -310,6 +332,14 @@ function migrador_noticias_import_single_url() {
 			$attachment_id = media_sideload_image( $image_url, $post_id, $title, 'id' );
 			if ( ! is_wp_error( $attachment_id ) ) {
 				set_post_thumbnail( $post_id, (int) $attachment_id );
+				// Quando a imagem veio do conteúdo, substitui o endereço remoto pela cópia da biblioteca.
+				if ( $content_image_source ) {
+					$local_image_url = wp_get_attachment_url( (int) $attachment_id );
+					$local_content   = str_replace( $content_image_source, $local_image_url, $content );
+					if ( $local_content !== $content ) {
+						wp_update_post( array( 'ID' => $post_id, 'post_content' => wp_kses_post( $local_content ) ) );
+					}
+				}
 			}
 		}
 
