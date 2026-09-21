@@ -198,13 +198,20 @@ function migrador_noticias_get_content_type( $url ) {
 	return count( $segments ) >= 2 ? 'post' : 'page';
 }
 
-/** Recupera a categoria a partir do primeiro segmento: /categoria/slug. */
-function migrador_noticias_get_url_category( $url ) {
-	$segments = array_values( array_filter( explode( '/', trim( (string) wp_parse_url( $url, PHP_URL_PATH ), '/' ) ) ) );
-	if ( count( $segments ) < 2 ) {
-		return '';
+/** Lê todas as categorias indicadas pelos links no bloco .post-meta da notícia. */
+function migrador_noticias_get_post_meta_categories( DOMXPath $xpath ) {
+	$links = $xpath->query( '//*[contains(concat(" ", normalize-space(@class), " "), " post-meta ")]//a[@href]' );
+	if ( ! $links || ! $links->length ) {
+		return array();
 	}
-	return sanitize_text_field( ucwords( str_replace( '-', ' ', rawurldecode( $segments[0] ) ) ) );
+	$categories = array();
+	foreach ( $links as $link ) {
+		$name = sanitize_text_field( trim( $link->textContent ) );
+		if ( $name ) {
+			$categories[ sanitize_title( $name ) ] = $name;
+		}
+	}
+	return array_values( $categories );
 }
 
 /** Retorna categorias da fila já existentes e as que ainda precisam ser criadas. */
@@ -214,7 +221,8 @@ function migrador_noticias_category_status( array $queue ) {
 		if ( 'post' !== migrador_noticias_get_content_type( $url ) ) {
 			continue;
 		}
-		$category = migrador_noticias_get_url_category( $url );
+		$segments = array_values( array_filter( explode( '/', trim( (string) wp_parse_url( $url, PHP_URL_PATH ), '/' ) ) ) );
+		$category = ! empty( $segments[0] ) ? sanitize_text_field( ucwords( str_replace( '-', ' ', rawurldecode( $segments[0] ) ) ) ) : '';
 		if ( $category ) {
 			$category_slugs[ sanitize_title( $category ) ] = $category;
 		}
@@ -234,21 +242,33 @@ function migrador_noticias_category_status( array $queue ) {
 }
 
 /** Localiza a categoria pelo slug/nome ou cria uma categoria nova para a notícia. */
-function migrador_noticias_get_or_create_category( $category_name ) {
-	$category_name = sanitize_text_field( $category_name );
-	if ( ! $category_name ) {
-		return 0;
+function migrador_noticias_get_or_create_categories( array $category_names ) {
+	$result = array( 'ids' => array(), 'names' => array(), 'created' => array(), 'reused' => array() );
+	foreach ( $category_names as $category_name ) {
+		$category_name = sanitize_text_field( $category_name );
+		if ( ! $category_name ) {
+			continue;
+		}
+		$slug = sanitize_title( $category_name );
+		$term = get_category_by_slug( $slug );
+		if ( ! $term ) {
+			$term = get_term_by( 'name', $category_name, 'category' );
+		}
+		if ( $term && ! is_wp_error( $term ) ) {
+			$result['ids'][] = (int) $term->term_id;
+			$result['reused'][] = $term->name;
+			$result['names'][] = $term->name;
+			continue;
+		}
+		$term_id = wp_insert_category( array( 'cat_name' => $category_name, 'category_nicename' => $slug ) );
+		if ( ! is_wp_error( $term_id ) && $term_id ) {
+			$result['ids'][] = (int) $term_id;
+			$result['created'][] = $category_name;
+			$result['names'][] = $category_name;
+		}
 	}
-	$slug = sanitize_title( $category_name );
-	$term = get_category_by_slug( $slug );
-	if ( ! $term ) {
-		$term = get_term_by( 'name', $category_name, 'category' );
-	}
-	if ( $term && ! is_wp_error( $term ) ) {
-		return (int) $term->term_id;
-	}
-	$term_id = wp_insert_category( array( 'cat_name' => $category_name, 'category_nicename' => $slug ) );
-	return is_wp_error( $term_id ) ? 0 : (int) $term_id;
+	$result['ids'] = array_values( array_unique( $result['ids'] ) );
+	return $result;
 }
 
 function migrador_noticias_finish_item( $url, $success, $details ) {
@@ -315,8 +335,7 @@ function migrador_noticias_import_single_url() {
 		}
 		$slug = sanitize_title( basename( untrailingslashit( (string) wp_parse_url( $url, PHP_URL_PATH ) ) ) );
 		$content_type = migrador_noticias_get_content_type( $url );
-		$category_name = 'post' === $content_type ? migrador_noticias_get_url_category( $url ) : '';
-		$category_id = $category_name ? migrador_noticias_get_or_create_category( $category_name ) : 0;
+		$category_data = 'post' === $content_type ? migrador_noticias_get_or_create_categories( migrador_noticias_get_post_meta_categories( $xpath ) ) : array( 'ids' => array(), 'names' => array(), 'created' => array(), 'reused' => array() );
 		// A imagem do conteúdo tem prioridade sobre og:image para garantir que a miniatura represente a notícia.
 		$content_image_node   = $xpath->query( './/img[@src]', $container )->item( 0 );
 		$content_image_source = $content_image_node ? $content_image_node->getAttribute( 'src' ) : '';
@@ -333,8 +352,8 @@ function migrador_noticias_import_single_url() {
 			throw new Exception( $post_id->get_error_message() );
 		}
 		update_post_meta( $post_id, '_url_origem_net', $url );
-		if ( 'post' === $content_type && $category_id ) {
-			wp_set_post_categories( $post_id, array( $category_id ), false );
+		if ( 'post' === $content_type && ! empty( $category_data['ids'] ) ) {
+			wp_set_post_categories( $post_id, $category_data['ids'], false );
 		}
 
 		if ( $image_url && ! has_post_thumbnail( $post_id ) ) {
@@ -355,9 +374,9 @@ function migrador_noticias_import_single_url() {
 			}
 		}
 
-		migrador_noticias_finish_item( $url, true, array( 'post_id' => $post_id, 'title' => $title, 'content_type' => $content_type, 'category' => $category_name, 'http_code' => $http_code ) );
+		migrador_noticias_finish_item( $url, true, array( 'post_id' => $post_id, 'title' => $title, 'content_type' => $content_type, 'categories' => $category_data['names'], 'categories_created' => $category_data['created'], 'categories_reused' => $category_data['reused'], 'http_code' => $http_code ) );
 		migrador_noticias_release_lock( $lock );
-		wp_send_json_success( array_merge( migrador_noticias_status(), array( 'url' => $url, 'title' => $title, 'post_id' => $post_id, 'content_type' => $content_type, 'category' => $category_name, 'http_code' => $http_code, 'message' => 'Conteúdo importado.' ) ) );
+		wp_send_json_success( array_merge( migrador_noticias_status(), array( 'url' => $url, 'title' => $title, 'post_id' => $post_id, 'content_type' => $content_type, 'categories' => $category_data['names'], 'http_code' => $http_code, 'message' => 'Conteúdo importado.' ) ) );
 	} catch ( Exception $exception ) {
 		migrador_noticias_finish_item( $url, false, array( 'message' => $exception->getMessage() ) );
 		migrador_noticias_release_lock( $lock );
