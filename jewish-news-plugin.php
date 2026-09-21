@@ -271,6 +271,56 @@ function migrador_noticias_get_or_create_categories( array $category_names ) {
 	return $result;
 }
 
+/** Extrai o nome do autor exibido no bloco .post-author-details, quando houver. */
+function migrador_noticias_get_post_author_name( DOMXPath $xpath ) {
+	$author_nodes = $xpath->query( '//*[contains(concat(" ", normalize-space(@class), " "), " post-author-details ")]//*[contains(concat(" ", normalize-space(@class), " "), " author-name ") or @rel="author" or self::h1 or self::h2 or self::h3 or self::h4 or self::h5 or self::h6]' );
+	if ( ! $author_nodes || ! $author_nodes->length ) {
+		$author_nodes = $xpath->query( '//*[contains(concat(" ", normalize-space(@class), " "), " post-author-details ")]//a[normalize-space()]' );
+	}
+	if ( ! $author_nodes || ! $author_nodes->length ) {
+		return '';
+	}
+	return sanitize_text_field( trim( $author_nodes->item( 0 )->textContent ) );
+}
+
+/** Reutiliza o autor existente ou cria uma conta de autor usando nome@dominio-do-wordpress. */
+function migrador_noticias_get_or_create_author( $author_name ) {
+	$author_name = sanitize_text_field( $author_name );
+	if ( ! $author_name ) {
+		return array( 'id' => 1, 'name' => '', 'created' => false );
+	}
+
+	$login_base = sanitize_user( sanitize_title( $author_name ), true );
+	$login_base = $login_base ? $login_base : 'autor-migrado';
+	$user = get_user_by( 'login', $login_base );
+	if ( ! $user ) {
+		$user = get_user_by( 'slug', sanitize_title( $author_name ) );
+	}
+	if ( $user ) {
+		return array( 'id' => (int) $user->ID, 'name' => $user->display_name, 'created' => false );
+	}
+
+	$domain = (string) wp_parse_url( home_url(), PHP_URL_HOST );
+	$domain = preg_replace( '/^www\./i', '', $domain );
+	$login = $login_base;
+	$index = 2;
+	while ( username_exists( $login ) ) {
+		$login = $login_base . $index;
+		$index++;
+	}
+	$email = sanitize_email( $login . '@' . $domain );
+	while ( email_exists( $email ) ) {
+		$email = sanitize_email( $login . $index . '@' . $domain );
+		$index++;
+	}
+
+	$user_id = wp_insert_user( array( 'user_login' => $login, 'user_email' => $email, 'display_name' => $author_name, 'nickname' => $author_name, 'user_pass' => wp_generate_password( 32, true, true ), 'role' => 'author' ) );
+	if ( is_wp_error( $user_id ) ) {
+		return array( 'id' => 1, 'name' => '', 'created' => false );
+	}
+	return array( 'id' => (int) $user_id, 'name' => $author_name, 'created' => true );
+}
+
 function migrador_noticias_finish_item( $url, $success, $details ) {
 	$queue = migrador_noticias_read_state( 'queue.json' );
 	$index = array_search( $url, $queue, true );
@@ -336,6 +386,7 @@ function migrador_noticias_import_single_url() {
 		$slug = sanitize_title( basename( untrailingslashit( (string) wp_parse_url( $url, PHP_URL_PATH ) ) ) );
 		$content_type = migrador_noticias_get_content_type( $url );
 		$category_data = 'post' === $content_type ? migrador_noticias_get_or_create_categories( migrador_noticias_get_post_meta_categories( $xpath ) ) : array( 'ids' => array(), 'names' => array(), 'created' => array(), 'reused' => array() );
+		$author_data = 'post' === $content_type ? migrador_noticias_get_or_create_author( migrador_noticias_get_post_author_name( $xpath ) ) : array( 'id' => 1, 'name' => '', 'created' => false );
 		// A imagem do conteúdo tem prioridade sobre og:image para garantir que a miniatura represente a notícia.
 		$content_image_node   = $xpath->query( './/img[@src]', $container )->item( 0 );
 		$content_image_source = $content_image_node ? $content_image_node->getAttribute( 'src' ) : '';
@@ -347,9 +398,12 @@ function migrador_noticias_import_single_url() {
 		$image_url = migrador_noticias_resolve_url( $image_source, $url );
 
 		$existing = get_posts( array( 'post_type' => $content_type, 'post_status' => 'any', 'meta_key' => '_url_origem_net', 'meta_value' => $url, 'fields' => 'ids', 'posts_per_page' => 1 ) );
-		$post_id = $existing ? (int) $existing[0] : wp_insert_post( array( 'post_title' => $title, 'post_content' => wp_kses_post( $content ), 'post_status' => 'publish', 'post_type' => $content_type, 'post_name' => $slug ), true );
+		$post_id = $existing ? (int) $existing[0] : wp_insert_post( array( 'post_title' => $title, 'post_content' => wp_kses_post( $content ), 'post_status' => 'publish', 'post_type' => $content_type, 'post_name' => $slug, 'post_author' => $author_data['id'] ), true );
 		if ( is_wp_error( $post_id ) ) {
 			throw new Exception( $post_id->get_error_message() );
+		}
+		if ( $existing ) {
+			wp_update_post( array( 'ID' => $post_id, 'post_author' => $author_data['id'] ) );
 		}
 		update_post_meta( $post_id, '_url_origem_net', $url );
 		if ( 'post' === $content_type && ! empty( $category_data['ids'] ) ) {
@@ -374,9 +428,9 @@ function migrador_noticias_import_single_url() {
 			}
 		}
 
-		migrador_noticias_finish_item( $url, true, array( 'post_id' => $post_id, 'title' => $title, 'content_type' => $content_type, 'categories' => $category_data['names'], 'categories_created' => $category_data['created'], 'categories_reused' => $category_data['reused'], 'http_code' => $http_code ) );
+		migrador_noticias_finish_item( $url, true, array( 'post_id' => $post_id, 'title' => $title, 'content_type' => $content_type, 'author' => $author_data['name'], 'author_created' => $author_data['created'], 'categories' => $category_data['names'], 'categories_created' => $category_data['created'], 'categories_reused' => $category_data['reused'], 'http_code' => $http_code ) );
 		migrador_noticias_release_lock( $lock );
-		wp_send_json_success( array_merge( migrador_noticias_status(), array( 'url' => $url, 'title' => $title, 'post_id' => $post_id, 'content_type' => $content_type, 'categories' => $category_data['names'], 'http_code' => $http_code, 'message' => 'Conteúdo importado.' ) ) );
+		wp_send_json_success( array_merge( migrador_noticias_status(), array( 'url' => $url, 'title' => $title, 'post_id' => $post_id, 'content_type' => $content_type, 'author' => $author_data['name'], 'categories' => $category_data['names'], 'http_code' => $http_code, 'message' => 'Conteúdo importado.' ) ) );
 	} catch ( Exception $exception ) {
 		migrador_noticias_finish_item( $url, false, array( 'message' => $exception->getMessage() ) );
 		migrador_noticias_release_lock( $lock );
