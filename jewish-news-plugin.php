@@ -64,6 +64,7 @@ function migrador_noticias_status() {
 	$completed = migrador_noticias_read_state( 'completed.json' );
 	$errors    = migrador_noticias_read_state( 'errors.json' );
 	$total     = count( $queue ) + count( $completed ) + count( $errors );
+	$category_status = migrador_noticias_category_status( $queue );
 
 	return array(
 		'queue'     => count( $queue ),
@@ -72,6 +73,9 @@ function migrador_noticias_status() {
 		'total'     => $total,
 		'processed' => count( $completed ) + count( $errors ),
 		'next_url'  => ! empty( $queue ) ? reset( $queue ) : '',
+		'categories_site_total' => $category_status['site_total'],
+		'categories_existing'   => $category_status['existing'],
+		'categories_pending'    => $category_status['pending'],
 	);
 }
 
@@ -188,37 +192,45 @@ function migrador_noticias_selector_to_xpath( $selector ) {
 	return '';
 }
 
-/**
- * URLs /news/{slug} são notícias. As demais URLs do sitemap são tratadas como páginas.
- * Altere MIGRATION_POST_PATH_PREFIX em config.php caso o site legado use outro prefixo.
- */
+/** URLs com categoria e slug (/categoria/slug) são posts; /slug é uma página. */
 function migrador_noticias_get_content_type( $url ) {
 	$segments = array_values( array_filter( explode( '/', trim( (string) wp_parse_url( $url, PHP_URL_PATH ), '/' ) ) ) );
-	return ! empty( $segments[0] ) && MIGRATION_POST_PATH_PREFIX === sanitize_title( $segments[0] ) ? 'post' : 'page';
+	return count( $segments ) >= 2 ? 'post' : 'page';
 }
 
-/**
- * Recupera a última categoria navegável do breadcrumb, ignorando o link inicial e a própria página.
- * Aceita as variações mais comuns de marcação: .breadcrumb, .breadcrumbs e nav com "breadcrumb".
- */
-function migrador_noticias_get_breadcrumb_category( DOMXPath $xpath, $source_url ) {
-	$breadcrumb_links = $xpath->query( '//*[contains(concat(" ", normalize-space(@class), " "), " breadcrumb ") or contains(concat(" ", normalize-space(@class), " "), " breadcrumbs ") or @aria-label="breadcrumb" or contains(translate(@class, "BREADCRUMB", "breadcrumb"), "breadcrumb")]//a[@href]' );
-	if ( ! $breadcrumb_links || ! $breadcrumb_links->length ) {
+/** Recupera a categoria a partir do primeiro segmento: /categoria/slug. */
+function migrador_noticias_get_url_category( $url ) {
+	$segments = array_values( array_filter( explode( '/', trim( (string) wp_parse_url( $url, PHP_URL_PATH ), '/' ) ) ) );
+	if ( count( $segments ) < 2 ) {
 		return '';
 	}
+	return sanitize_text_field( ucwords( str_replace( '-', ' ', rawurldecode( $segments[0] ) ) ) );
+}
 
-	$candidates = array();
-	$source_url = untrailingslashit( $source_url );
-	foreach ( $breadcrumb_links as $link ) {
-		$name = sanitize_text_field( trim( $link->textContent ) );
-		$href = untrailingslashit( trim( $link->getAttribute( 'href' ) ) );
-		if ( ! $name || ! $href || '/' === $href || $href === $source_url || preg_match( '#^https?://[^/]+$#i', $href ) ) {
+/** Retorna categorias da fila já existentes e as que ainda precisam ser criadas. */
+function migrador_noticias_category_status( array $queue ) {
+	$category_slugs = array();
+	foreach ( $queue as $url ) {
+		if ( 'post' !== migrador_noticias_get_content_type( $url ) ) {
 			continue;
 		}
-		$candidates[] = $name;
+		$category = migrador_noticias_get_url_category( $url );
+		if ( $category ) {
+			$category_slugs[ sanitize_title( $category ) ] = $category;
+		}
 	}
 
-	return ! empty( $candidates ) ? end( $candidates ) : '';
+	$existing = 0;
+	foreach ( $category_slugs as $slug => $name ) {
+		if ( get_category_by_slug( $slug ) || get_term_by( 'name', $name, 'category' ) ) {
+			$existing++;
+		}
+	}
+	return array(
+		'site_total' => count( get_categories( array( 'hide_empty' => false ) ) ),
+		'existing'   => $existing,
+		'pending'    => count( $category_slugs ) - $existing,
+	);
 }
 
 /** Localiza a categoria pelo slug/nome ou cria uma categoria nova para a notícia. */
@@ -303,7 +315,7 @@ function migrador_noticias_import_single_url() {
 		}
 		$slug = sanitize_title( basename( untrailingslashit( (string) wp_parse_url( $url, PHP_URL_PATH ) ) ) );
 		$content_type = migrador_noticias_get_content_type( $url );
-		$category_name = 'post' === $content_type ? migrador_noticias_get_breadcrumb_category( $xpath, $url ) : '';
+		$category_name = 'post' === $content_type ? migrador_noticias_get_url_category( $url ) : '';
 		$category_id = $category_name ? migrador_noticias_get_or_create_category( $category_name ) : 0;
 		// A imagem do conteúdo tem prioridade sobre og:image para garantir que a miniatura represente a notícia.
 		$content_image_node   = $xpath->query( './/img[@src]', $container )->item( 0 );

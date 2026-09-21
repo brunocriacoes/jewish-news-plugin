@@ -16,6 +16,7 @@ function migrador_noticias_render_admin_page() {
 		<div class="migrador-progress" aria-label="Progresso da migração"><div id="migrador-progress-bar" style="width:0%"></div></div>
 		<p id="migrador-progress-text"><?php echo esc_html( sprintf( '%d / %d processados', $status['processed'], $status['total'] ) ); ?></p>
 		<p><strong>Na fila:</strong> <span id="migrador-queue"><?php echo esc_html( $status['queue'] ); ?></span> · <strong>Concluídas:</strong> <span id="migrador-completed"><?php echo esc_html( $status['completed'] ); ?></span> · <strong>Erros:</strong> <span id="migrador-errors"><?php echo esc_html( $status['errors'] ); ?></span></p>
+		<p><strong>Categorias no site:</strong> <span id="migrador-categories-site-total"><?php echo esc_html( $status['categories_site_total'] ); ?></span> · <strong>Da fila já cadastradas:</strong> <span id="migrador-categories-existing"><?php echo esc_html( $status['categories_existing'] ); ?></span> · <strong>A cadastrar:</strong> <span id="migrador-categories-pending"><?php echo esc_html( $status['categories_pending'] ); ?></span></p>
 		<h2>Log</h2><pre id="migrador-log" aria-live="polite">Aguardando início.</pre>
 	</div>
 	<style>

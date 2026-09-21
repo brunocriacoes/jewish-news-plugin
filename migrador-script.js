@@ -23,6 +23,9 @@
     $('migrador-queue').textContent = status.queue || 0;
     $('migrador-completed').textContent = status.completed || 0;
     $('migrador-errors').textContent = status.errors || 0;
+	$('migrador-categories-site-total').textContent = status.categories_site_total || 0;
+	$('migrador-categories-existing').textContent = status.categories_existing || 0;
+	$('migrador-categories-pending').textContent = status.categories_pending || 0;
   }
   async function request(action, extra = {}) {
     const data = new URLSearchParams({ action, nonce: MigradorNoticias.nonce, ...extra });
