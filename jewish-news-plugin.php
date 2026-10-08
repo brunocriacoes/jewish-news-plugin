@@ -417,9 +417,10 @@ function migrador_noticias_import_single_url() {
 			throw new Exception( 'O container de conteúdo está vazio.' );
 		}
 
-		$title_node = $xpath->query( '//title' )->item( 0 );
+		// O primeiro heading dentro do conteúdo é o título editorial da página.
+		$title_node = $xpath->query( './/h1 | .//h2 | .//h3 | .//h4 | .//h5 | .//h6', $container )->item( 0 );
 		if ( ! $title_node ) {
-			$title_node = $xpath->query( '//h1' )->item( 0 );
+			$title_node = $xpath->query( '//title' )->item( 0 );
 		}
 		$title = $title_node ? sanitize_text_field( trim( $title_node->textContent ) ) : '';
 		if ( ! $title ) {
