@@ -231,8 +231,8 @@ function migrador_noticias_get_content_type( $url ) {
 }
 
 /** Lê todas as categorias indicadas pelos links no bloco .post-meta da notícia. */
-function migrador_noticias_get_post_meta_categories( DOMXPath $xpath ) {
-	$links = $xpath->query( '//*[contains(concat(" ", normalize-space(@class), " "), " post-meta ")]//a[@href]' );
+function migrador_noticias_get_post_meta_categories( DOMXPath $xpath, DOMNode $container ) {
+	$links = $xpath->query( './/*[contains(concat(" ", normalize-space(@class), " "), " post-meta ")]//a[@href]', $container );
 	if ( ! $links || ! $links->length ) {
 		return array();
 	}
@@ -267,6 +267,44 @@ function migrador_noticias_remove_content_dates( DOMXPath $xpath ) {
 		if ( $parent->parentNode && '' === trim( $parent->textContent ) ) {
 			$parent->parentNode->removeChild( $parent );
 		}
+	}
+}
+
+/** Remove metadados e botões de compartilhamento que o tema novo renderiza por conta própria. */
+function migrador_noticias_remove_theme_ui( DOMXPath $xpath, DOMNode $container ) {
+	$nodes_to_remove = array();
+	foreach ( $xpath->query( './/*[contains(concat(" ", normalize-space(@class), " "), " post-meta ")]', $container ) as $node ) {
+		$nodes_to_remove[] = $node;
+	}
+	foreach ( $xpath->query( './/*[contains(concat(" ", normalize-space(@class), " "), " buttons ")]', $container ) as $buttons ) {
+		$anchors = $xpath->query( './/a[@href]', $buttons );
+		foreach ( $anchors as $anchor ) {
+			$href = strtolower( $anchor->getAttribute( 'href' ) );
+			$class = strtolower( $anchor->getAttribute( 'class' ) );
+			if ( false !== strpos( $href, 'facebook.com/sharer' ) || false !== strpos( $href, 'twitter.com/intent' ) || false !== strpos( $href, 'linkedin.com/share' ) || false !== strpos( $href, 'whatsapp.com/send' ) || preg_match( '/\b(facebook|twitter|linkedin|whatsapp)\b/', $class ) ) {
+				$nodes_to_remove[] = $buttons;
+				break;
+			}
+		}
+	}
+	foreach ( $nodes_to_remove as $node ) {
+		if ( $node->parentNode ) {
+			$node->parentNode->removeChild( $node );
+		}
+	}
+
+	// Remove quebras de linha vazias deixadas no fim do conteúdo após a limpeza.
+	while ( $container->lastChild ) {
+		$last_child = $container->lastChild;
+		if ( XML_TEXT_NODE === $last_child->nodeType && '' === trim( $last_child->textContent ) ) {
+			$container->removeChild( $last_child );
+			continue;
+		}
+		if ( XML_ELEMENT_NODE === $last_child->nodeType && 'br' === strtolower( $last_child->nodeName ) ) {
+			$container->removeChild( $last_child );
+			continue;
+		}
+		break;
 	}
 }
 
@@ -440,7 +478,9 @@ function migrador_noticias_import_single_url() {
 		if ( '' === trim( wp_strip_all_tags( $content ) ) ) {
 			throw new Exception( 'O container de conteúdo está vazio.' );
 		}
+		$post_meta_categories = migrador_noticias_get_post_meta_categories( $xpath, $container );
 		migrador_noticias_remove_content_dates( $xpath );
+		migrador_noticias_remove_theme_ui( $xpath, $container );
 		$content = migrador_noticias_inner_html( $document, $container );
 
 		// O primeiro heading dentro do conteúdo é o título editorial e não deve ser duplicado no post.
@@ -459,7 +499,7 @@ function migrador_noticias_import_single_url() {
 		}
 		$slug = sanitize_title( basename( untrailingslashit( (string) wp_parse_url( $url, PHP_URL_PATH ) ) ) );
 		$content_type = migrador_noticias_get_content_type( $url );
-		$category_data = 'post' === $content_type ? migrador_noticias_get_or_create_categories( migrador_noticias_get_post_meta_categories( $xpath ) ) : array( 'ids' => array(), 'names' => array(), 'created' => array(), 'reused' => array() );
+		$category_data = 'post' === $content_type ? migrador_noticias_get_or_create_categories( $post_meta_categories ) : array( 'ids' => array(), 'names' => array(), 'created' => array(), 'reused' => array() );
 		$author_data = 'post' === $content_type ? migrador_noticias_get_or_create_author( migrador_noticias_get_post_author_name( $xpath ) ) : array( 'id' => 1, 'name' => '', 'created' => false );
 		// A imagem do conteúdo tem prioridade sobre og:image para garantir que a miniatura represente a notícia.
 		$content_image_node   = $xpath->query( './/img[@src]', $container )->item( 0 );
