@@ -246,6 +246,30 @@ function migrador_noticias_get_post_meta_categories( DOMXPath $xpath ) {
 	return array_values( $categories );
 }
 
+/** Remove somente as datas visíveis em .post-meta; categorias e demais links são preservados. */
+function migrador_noticias_remove_content_dates( DOMXPath $xpath ) {
+	$date_nodes = $xpath->query( '//*[contains(concat(" ", normalize-space(@class), " "), " post-meta ")]//span' );
+	if ( ! $date_nodes ) {
+		return;
+	}
+	$empty_parents = array();
+	foreach ( $date_nodes as $node ) {
+		if ( ! preg_match( '/^\s*\d{1,2}\/\d{1,2}\/\d{4}\s*$/', $node->textContent ) ) {
+			continue;
+		}
+		$parent = $node->parentNode;
+		if ( $parent ) {
+			$parent->removeChild( $node );
+			$empty_parents[] = $parent;
+		}
+	}
+	foreach ( $empty_parents as $parent ) {
+		if ( $parent->parentNode && '' === trim( $parent->textContent ) ) {
+			$parent->parentNode->removeChild( $parent );
+		}
+	}
+}
+
 /** Retorna categorias da fila já existentes e as que ainda precisam ser criadas. */
 function migrador_noticias_category_status( array $queue ) {
 	$category_slugs = array();
@@ -416,6 +440,8 @@ function migrador_noticias_import_single_url() {
 		if ( '' === trim( wp_strip_all_tags( $content ) ) ) {
 			throw new Exception( 'O container de conteúdo está vazio.' );
 		}
+		migrador_noticias_remove_content_dates( $xpath );
+		$content = migrador_noticias_inner_html( $document, $container );
 
 		// O primeiro heading dentro do conteúdo é o título editorial e não deve ser duplicado no post.
 		$content_title_node = $xpath->query( './/h1 | .//h2 | .//h3 | .//h4 | .//h5 | .//h6', $container )->item( 0 );
