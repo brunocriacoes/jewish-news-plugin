@@ -5,23 +5,29 @@ function migrador_noticias_render_admin_page() {
 	$status = migrador_noticias_status();
 	?>
 	<div class="wrap migrador-noticias-wrap">
-		<h1>Migrador .NET</h1>
-		<p>Importação sequencial e pausável para reduzir a carga no site de origem.</p>
-		<p>
-			<button type="button" class="button button-secondary" id="migrador-read-sitemap">1. Ler Sitemap e Gerar Fila</button>
-			<button type="button" class="button button-primary" id="migrador-start">2. Iniciar Importação</button>
-			<button type="button" class="button" id="migrador-pause" disabled>Pausar</button>
-		</p>
-		<div class="migrador-progress" aria-label="Progresso da migração"><div id="migrador-progress-bar" style="width:0%"></div></div>
-		<p id="migrador-progress-text"><?php echo esc_html( sprintf( '%d / %d processados', $status['processed'], $status['total'] ) ); ?></p>
-		<p><strong>Na fila:</strong> <span id="migrador-queue"><?php echo esc_html( $status['queue'] ); ?></span> · <strong>Concluídas:</strong> <span id="migrador-completed"><?php echo esc_html( $status['completed'] ); ?></span> · <strong>Erros:</strong> <span id="migrador-errors"><?php echo esc_html( $status['errors'] ); ?></span></p>
-		<p><strong>Categorias no site:</strong> <span id="migrador-categories-site-total"><?php echo esc_html( $status['categories_site_total'] ); ?></span> · <strong>Da fila já cadastradas:</strong> <span id="migrador-categories-existing"><?php echo esc_html( $status['categories_existing'] ); ?></span> · <strong>A cadastrar:</strong> <span id="migrador-categories-pending"><?php echo esc_html( $status['categories_pending'] ); ?></span></p>
-		<h2>Log</h2><pre id="migrador-log" aria-live="polite">Aguardando início.</pre>
+		<header class="migrador-header"><h1>Migrador .NET</h1><p>Importação sequencial e pausável de posts, imagens e categorias entre plataformas.</p></header>
+		<section class="migrador-card migrador-actions" aria-label="Ações da importação">
+			<div class="migrador-action-flow"><button type="button" class="button" id="migrador-read-sitemap">1. Ler Sitemap</button><button type="button" class="button button-primary" id="migrador-start">2. Iniciar Importação</button><button type="button" class="button" id="migrador-pause" disabled>Pausar</button></div>
+			<button type="button" class="button migrador-button-danger" id="migrador-reprocess-errors">↻ Reprocessar Erros (<span id="migrador-errors-action"><?php echo esc_html( $status['errors'] ); ?></span>)</button>
+		</section>
+
+		<section class="migrador-kpis" aria-label="Métricas da migração">
+			<article class="migrador-kpi is-sitemap"><span>Total no Sitemap</span><strong id="migrador-total"><?php echo esc_html( $status['total'] ); ?></strong><small>links</small></article>
+			<article class="migrador-kpi is-queue"><span>Na Fila</span><strong id="migrador-queue"><?php echo esc_html( $status['queue'] ); ?></strong><small>artigos aguardando</small></article>
+			<article class="migrador-kpi is-success"><span>Importados</span><strong id="migrador-completed"><?php echo esc_html( $status['completed'] ); ?></strong><small>com sucesso</small></article>
+			<article class="migrador-kpi is-error"><span>Erros</span><strong id="migrador-errors"><?php echo esc_html( $status['errors'] ); ?></strong><small>itens para revisar</small></article>
+			<article class="migrador-kpi is-category"><span>Categorias</span><strong id="migrador-categories-site-total"><?php echo esc_html( $status['categories_site_total'] ); ?></strong><small><span id="migrador-categories-existing"><?php echo esc_html( $status['categories_existing'] ); ?></span> cad. / <span id="migrador-categories-pending"><?php echo esc_html( $status['categories_pending'] ); ?></span> a cad.</small></article>
+		</section>
+
+		<section class="migrador-dashboard-grid">
+			<article class="migrador-card migrador-chart-card"><h2>Status dos Artigos</h2><div class="migrador-chart-wrap"><canvas id="migrador-status-chart" aria-label="Gráfico de status dos artigos"></canvas></div><div class="migrador-chart-legend"><span class="is-success">Sucesso</span><span class="is-error">Erros</span><span class="is-queue">Na fila</span></div></article>
+			<article class="migrador-card migrador-progress-card"><h2>Progresso Geral da Importação</h2><div class="migrador-progress-head"><span id="migrador-progress-text"><?php echo esc_html( sprintf( '%d de %d processados', $status['processed'], $status['total'] ) ); ?></span><strong id="migrador-progress-badge">0%</strong></div><div class="migrador-progress" aria-label="Progresso da migração"><div id="migrador-progress-bar" style="width:0%"></div></div><footer><span>Fila atualizada pelo sitemap</span><span>Mapeamento: <b id="migrador-categories-existing-footer"><?php echo esc_html( $status['categories_existing'] ); ?></b> categorias</span></footer></article>
+		</section>
+
+		<section class="migrador-card migrador-log-card"><header><h2>Console de Log de Execução</h2><div><button type="button" class="button" id="migrador-download-errors">Baixar Relatório de Erros</button><button type="button" class="button" id="migrador-clear-log">Limpar Log</button></div></header><div id="migrador-log" class="migrador-log" aria-live="polite"><div>Aguardando início.</div></div></section>
 	</div>
 	<style>
-		.migrador-progress { max-width:720px; height:24px; background:#dcdcde; border-radius:3px; overflow:hidden; }
-		#migrador-progress-bar { height:100%; background:#2271b1; transition:width .25s ease; }
-		#migrador-log { max-width:900px; min-height:210px; padding:14px; overflow:auto; color:#d7e4ef; background:#1d2327; white-space:pre-wrap; }
+		.migrador-noticias-wrap{max-width:1180px;margin-top:26px}.migrador-header h1{margin:0 0 6px;font-size:28px}.migrador-header p{margin:0 0 20px;color:#50575e}.migrador-card,.migrador-kpi{background:#fff;border:1px solid #dcdcde;border-radius:8px;box-shadow:0 1px 2px rgba(0,0,0,.04)}.migrador-actions{padding:16px;display:flex;align-items:center;justify-content:space-between;gap:16px}.migrador-action-flow{display:flex;gap:8px;flex-wrap:wrap}.migrador-button-danger{border-color:#d63638!important;color:#a02224!important}.migrador-kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin:18px 0}.migrador-kpi{border-top:4px solid #2271b1;padding:15px}.migrador-kpi.is-queue{border-color:#72aee6}.migrador-kpi.is-success{border-color:#00a32a}.migrador-kpi.is-error{border-color:#d63638}.migrador-kpi.is-category{border-color:#8c8f94}.migrador-kpi span,.migrador-kpi small{display:block;color:#646970}.migrador-kpi strong{display:inline-block;margin:8px 5px 4px 0;font-size:27px;line-height:1}.migrador-dashboard-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.migrador-chart-card,.migrador-progress-card{padding:20px}.migrador-card h2{margin:0 0 16px;font-size:16px}.migrador-chart-wrap{height:230px;position:relative}.migrador-chart-legend{display:flex;justify-content:center;gap:16px;font-size:12px}.migrador-chart-legend span:before{content:'';display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;background:#2271b1}.migrador-chart-legend .is-success:before{background:#00a32a}.migrador-chart-legend .is-error:before{background:#d63638}.migrador-progress-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}.migrador-progress-head strong{background:#e5f2ff;color:#135e96;border-radius:999px;padding:5px 10px}.migrador-progress{height:14px;background:#dcdcde;border-radius:999px;overflow:hidden}.migrador-progress div{height:100%;background:#2271b1;transition:width .3s ease}.migrador-progress-card footer{display:flex;justify-content:space-between;gap:10px;margin-top:22px;padding-top:14px;border-top:1px solid #f0f0f1;color:#646970;font-size:12px}.migrador-log-card{margin-top:18px}.migrador-log-card header{display:flex;justify-content:space-between;align-items:center;padding:16px 18px;border-bottom:1px solid #dcdcde}.migrador-log-card h2{margin:0}.migrador-log{min-height:220px;max-height:420px;overflow:auto;padding:14px 18px;background:#1d2327;color:#50e3c2;font:12px/1.6 Consolas,Monaco,monospace}.migrador-log div{white-space:pre-wrap}.migrador-log .is-error{color:#f87171}.migrador-log .is-success{color:#38ef7d}@media(max-width:900px){.migrador-kpis{grid-template-columns:repeat(2,1fr)}.migrador-dashboard-grid{grid-template-columns:1fr}.migrador-actions,.migrador-log-card header{align-items:flex-start;flex-direction:column}}@media(max-width:480px){.migrador-kpis{grid-template-columns:1fr}.migrador-progress-card footer{flex-direction:column}}
 	</style>
 	<?php
 }
