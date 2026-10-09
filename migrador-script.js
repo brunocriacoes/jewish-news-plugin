@@ -3,6 +3,7 @@
   'use strict';
   let running = false;
   let paused = false;
+  let consecutiveErrors = 0;
   let status = MigradorNoticias.initialStatus;
   let statusChart = null;
   const $ = (id) => document.getElementById(id);
@@ -63,6 +64,7 @@
 
   function updateButtons() {
     $('migrador-start').disabled = running && !paused;
+	$('migrador-start').innerHTML = `<span class="dashicons dashicons-controls-play"></span>${paused && !running ? 'Retomar Importação' : '2. Iniciar Importação'}`;
     $('migrador-pause').disabled = !running;
     $('migrador-pause').textContent = paused ? 'Retomar' : 'Pausar';
     $('migrador-reprocess-errors').disabled = running || !Number(status.errors || 0);
@@ -79,11 +81,18 @@
       try {
         const data = await request('migrador_noticias_import_single_url', { url });
         render(data);
+		consecutiveErrors = 0;
         log(`HTTP ${data.http_code}: "${data.title}" importado como ${data.content_type}.`, 'success');
       } catch (error) {
         if (error.data && error.data.busy) { log('Importação ocupada; nova tentativa em breve.'); await sleep(1000); continue; }
         if (error.data) render(error.data);
+		consecutiveErrors += 1;
         log(`Erro em ${url}: ${error.message || 'erro desconhecido'}`, 'error');
+		if (consecutiveErrors >= 3) {
+			paused = true;
+			log('Importação pausada automaticamente após 3 erros consecutivos. Verifique o relatório e retome quando estiver pronto.', 'error');
+			break;
+		}
       }
       if (running && !paused) await sleep(Number(MigradorNoticias.delay) || 2000);
     }
