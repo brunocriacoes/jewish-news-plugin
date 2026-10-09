@@ -21,7 +21,7 @@
     if (!window.Chart) return;
     statusChart = new Chart($('migrador-status-chart'), {
       type: 'doughnut',
-      data: { labels: ['Sucesso', 'Erros', 'Na fila'], datasets: [{ data: [0, 0, 0], backgroundColor: ['#00a32a', '#d63638', '#2271b1'], borderWidth: 0 }] },
+      data: { labels: ['Sucesso', 'Erros', 'Na fila'], datasets: [{ data: [0, 0, 0], backgroundColor: ['#16803b', '#b42318', '#1769aa'], borderWidth: 0 }] },
       options: { maintainAspectRatio: false, cutout: '68%', plugins: { legend: { display: false }, tooltip: { padding: 10 } } }
     });
   }
