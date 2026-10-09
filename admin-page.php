@@ -7,7 +7,6 @@ function migrador_noticias_render_admin_page() {
 	<div class="wrap migrador-noticias-wrap">
 		<h1>Migrador .NET</h1>
 		<p>Importação sequencial e pausável para reduzir a carga no site de origem.</p>
-		<div class="notice notice-info inline"><p><strong>Sitemap:</strong> <?php echo esc_html( MIGRATION_SITEMAP_URL ); ?><br><strong>Container CSS:</strong> <?php echo esc_html( MIGRATION_TARGET_CONTAINER ); ?></p></div>
 		<p>
 			<button type="button" class="button button-secondary" id="migrador-read-sitemap">1. Ler Sitemap e Gerar Fila</button>
 			<button type="button" class="button button-primary" id="migrador-start">2. Iniciar Importação</button>
