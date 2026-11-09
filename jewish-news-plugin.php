@@ -23,7 +23,7 @@ function migrador_noticias_activate() {
 		return;
 	}
 
-	foreach ( array( 'queue.json', 'completed.json', 'errors.json' ) as $file ) {
+	foreach ( array( 'queue.json', 'completed.json', 'errors.json', 'url-category-repair-queue.json', 'url-category-repair-completed.json' ) as $file ) {
 		$path = MIGRADOR_NOTICIAS_DATA_DIR . $file;
 		if ( ! file_exists( $path ) ) {
 			file_put_contents( $path, '[]', LOCK_EX );
@@ -95,6 +95,7 @@ function migrador_noticias_status() {
 	$errors    = migrador_noticias_read_state( 'errors.json' );
 	$total     = count( $queue ) + count( $completed ) + count( $errors );
 	$category_status = migrador_noticias_category_status( $queue );
+	$url_category_repair = migrador_noticias_url_category_repair_status();
 
 	return array(
 		'queue'     => count( $queue ),
@@ -106,6 +107,9 @@ function migrador_noticias_status() {
 		'categories_site_total' => $category_status['site_total'],
 		'categories_existing'   => $category_status['existing'],
 		'categories_pending'    => $category_status['pending'],
+		'url_category_repair_queue'     => $url_category_repair['queue'],
+		'url_category_repair_completed' => $url_category_repair['completed'],
+		'url_category_repair_total'     => $url_category_repair['total'],
 	);
 }
 
@@ -551,6 +555,88 @@ function migrador_noticias_import_single_url() {
 	}
 }
 add_action( 'wp_ajax_migrador_noticias_import_single_url', 'migrador_noticias_import_single_url' );
+
+/** Estado da rotina que corrige categorias sem reimportar o conteúdo. */
+function migrador_noticias_url_category_repair_status() {
+	$queue     = migrador_noticias_read_state( 'url-category-repair-queue.json' );
+	$completed = migrador_noticias_read_state( 'url-category-repair-completed.json' );
+	return array(
+		'queue'     => count( $queue ),
+		'completed' => count( $completed ),
+		'total'     => count( $queue ) + count( $completed ),
+	);
+}
+
+/** Retorna todos os segmentos da URL que antecedem o slug final como categorias. */
+function migrador_noticias_get_url_path_categories( $url ) {
+	$segments = array_values( array_filter( explode( '/', trim( (string) wp_parse_url( $url, PHP_URL_PATH ), '/' ) ) ) );
+	if ( count( $segments ) < 2 ) {
+		return array();
+	}
+	array_pop( $segments );
+	$categories = array();
+	foreach ( $segments as $segment ) {
+		$name = sanitize_text_field( ucwords( str_replace( '-', ' ', rawurldecode( $segment ) ) ) );
+		if ( $name ) {
+			$categories[ sanitize_title( $name ) ] = $name;
+		}
+	}
+	return array_values( $categories );
+}
+
+/** Prepara a fila com todos os posts já importados; nenhum conteúdo é baixado novamente. */
+function migrador_noticias_prepare_url_category_repair() {
+	migrador_noticias_can_manage();
+	$post_ids = get_posts( array( 'post_type' => 'post', 'post_status' => 'any', 'meta_key' => '_url_origem_net', 'meta_compare' => 'EXISTS', 'fields' => 'ids', 'posts_per_page' => -1, 'orderby' => 'ID', 'order' => 'ASC' ) );
+	$queue = array();
+	foreach ( $post_ids as $post_id ) {
+		$url = esc_url_raw( get_post_meta( $post_id, '_url_origem_net', true ) );
+		if ( $url && migrador_noticias_is_legacy_url( $url ) ) {
+			$queue[] = array( 'post_id' => (int) $post_id, 'url' => $url );
+		}
+	}
+	migrador_noticias_write_state( 'url-category-repair-queue.json', $queue );
+	migrador_noticias_write_state( 'url-category-repair-completed.json', array() );
+	wp_send_json_success( array_merge( migrador_noticias_status(), array( 'message' => sprintf( '%d posts preparados para correção de categorias por URL.', count( $queue ) ) ) ) );
+}
+add_action( 'wp_ajax_migrador_noticias_prepare_url_category_repair', 'migrador_noticias_prepare_url_category_repair' );
+
+/** Corrige um post por chamada AJAX, acrescentando categorias de URL às que já existem. */
+function migrador_noticias_process_url_category_repair() {
+	migrador_noticias_can_manage();
+	$lock = migrador_noticias_acquire_lock();
+	if ( ! $lock ) {
+		wp_send_json_error( array( 'message' => 'Outro processo está em andamento.', 'busy' => true ), 409 );
+	}
+	try {
+		$queue = migrador_noticias_read_state( 'url-category-repair-queue.json' );
+		if ( empty( $queue ) ) {
+			migrador_noticias_release_lock( $lock );
+			wp_send_json_success( array_merge( migrador_noticias_status(), array( 'message' => 'Correção de categorias concluída.' ) ) );
+		}
+		$item = array_shift( $queue );
+		$post_id = ! empty( $item['post_id'] ) ? (int) $item['post_id'] : 0;
+		$url = ! empty( $item['url'] ) ? esc_url_raw( $item['url'] ) : '';
+		if ( ! $post_id || 'post' !== get_post_type( $post_id ) || ! $url ) {
+			throw new Exception( 'Post ou URL de origem inválido.' );
+		}
+		$category_data = migrador_noticias_get_or_create_categories( migrador_noticias_get_url_path_categories( $url ) );
+		if ( ! empty( $category_data['ids'] ) ) {
+			// append=true preserva as categorias já extraídas de .post-meta.
+			wp_set_post_categories( $post_id, $category_data['ids'], true );
+		}
+		migrador_noticias_write_state( 'url-category-repair-queue.json', $queue );
+		$completed = migrador_noticias_read_state( 'url-category-repair-completed.json' );
+		$completed[] = array( 'post_id' => $post_id, 'url' => $url, 'categories' => $category_data['names'], 'date' => current_time( 'mysql' ) );
+		migrador_noticias_write_state( 'url-category-repair-completed.json', $completed );
+		migrador_noticias_release_lock( $lock );
+		wp_send_json_success( array_merge( migrador_noticias_status(), array( 'post_id' => $post_id, 'categories' => $category_data['names'] ) ) );
+	} catch ( Exception $exception ) {
+		migrador_noticias_release_lock( $lock );
+		wp_send_json_error( array_merge( migrador_noticias_status(), array( 'message' => $exception->getMessage() ) ), 422 );
+	}
+}
+add_action( 'wp_ajax_migrador_noticias_process_url_category_repair', 'migrador_noticias_process_url_category_repair' );
 
 function migrador_noticias_get_status() {
 	migrador_noticias_can_manage();
