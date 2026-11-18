@@ -23,7 +23,7 @@ function migrador_noticias_activate() {
 		return;
 	}
 
-	foreach ( array( 'queue.json', 'completed.json', 'errors.json', 'url-category-repair-queue.json', 'url-category-repair-completed.json' ) as $file ) {
+	foreach ( array( 'queue.json', 'completed.json', 'errors.json', 'url-category-repair-queue.json', 'url-category-repair-completed.json', 'image-repair-queue.json', 'image-repair-completed.json' ) as $file ) {
 		$path = MIGRADOR_NOTICIAS_DATA_DIR . $file;
 		if ( ! file_exists( $path ) ) {
 			file_put_contents( $path, '[]', LOCK_EX );
@@ -96,6 +96,7 @@ function migrador_noticias_status() {
 	$total     = count( $queue ) + count( $completed ) + count( $errors );
 	$category_status = migrador_noticias_category_status( $queue );
 	$url_category_repair = migrador_noticias_url_category_repair_status();
+	$image_repair = migrador_noticias_image_repair_status();
 
 	return array(
 		'queue'     => count( $queue ),
@@ -110,6 +111,9 @@ function migrador_noticias_status() {
 		'url_category_repair_queue'     => $url_category_repair['queue'],
 		'url_category_repair_completed' => $url_category_repair['completed'],
 		'url_category_repair_total'     => $url_category_repair['total'],
+		'image_repair_queue'     => $image_repair['queue'],
+		'image_repair_completed' => $image_repair['completed'],
+		'image_repair_total'     => $image_repair['total'],
 	);
 }
 
@@ -218,6 +222,82 @@ function migrador_noticias_resolve_url( $raw_url, $page_url ) {
 	}
 	$directory = trailingslashit( dirname( (string) wp_parse_url( $page_url, PHP_URL_PATH ) ) );
 	return esc_url_raw( $scheme . '://' . $host . $directory . $raw_url );
+}
+
+/** Baixa uma imagem uma única vez e guarda a URL de origem no anexo para evitar duplicação. */
+function migrador_noticias_sideload_image( $image_url, $post_id, $description ) {
+	if ( ! $image_url || preg_match( '#^(data:|javascript:)#i', $image_url ) ) {
+		return 0;
+	}
+	$existing = get_posts( array( 'post_type' => 'attachment', 'post_status' => 'inherit', 'meta_key' => '_migrador_source_image_url', 'meta_value' => $image_url, 'fields' => 'ids', 'posts_per_page' => 1 ) );
+	if ( $existing ) {
+		return (int) $existing[0];
+	}
+	require_once ABSPATH . 'wp-admin/includes/media.php';
+	require_once ABSPATH . 'wp-admin/includes/file.php';
+	require_once ABSPATH . 'wp-admin/includes/image.php';
+	$attachment_id = media_sideload_image( $image_url, $post_id, $description, 'id' );
+	if ( is_wp_error( $attachment_id ) ) {
+		return 0;
+	}
+	update_post_meta( (int) $attachment_id, '_migrador_source_image_url', $image_url );
+	return (int) $attachment_id;
+}
+
+/** Envia todas as imagens internas restantes para a mídia local e atualiza seus src. */
+function migrador_noticias_localize_container_images( DOMXPath $xpath, DOMNode $container, $post_id, $page_url, $title, DOMNode $skip_node = null ) {
+	$nodes = array();
+	foreach ( $xpath->query( './/img[@src]', $container ) as $node ) {
+		$nodes[] = $node;
+	}
+	$result = array( 'localized' => 0, 'failed' => 0 );
+	foreach ( $nodes as $node ) {
+		if ( $skip_node && $node === $skip_node ) {
+			continue;
+		}
+		$source = $node->getAttribute( 'src' );
+		if ( attachment_url_to_postid( $source ) ) {
+			continue;
+		}
+		$image_url = migrador_noticias_resolve_url( $source, $page_url );
+		if ( ! $image_url ) {
+			$result['failed']++;
+			continue;
+		}
+		$attachment_id = migrador_noticias_sideload_image( $image_url, $post_id, $title );
+		if ( $attachment_id ) {
+			$node->setAttribute( 'src', wp_get_attachment_url( $attachment_id ) );
+			$node->removeAttribute( 'srcset' );
+			$result['localized']++;
+		} else {
+			// Mantém um endereço absoluto como fallback, nunca um caminho relativo quebrado.
+			$node->setAttribute( 'src', $image_url );
+			$result['failed']++;
+		}
+	}
+	return $result;
+}
+
+/** Localiza imagens de um conteúdo já salvo, sem buscar ou substituir texto do artigo. */
+function migrador_noticias_localize_saved_post_images( $post_id ) {
+	$post = get_post( $post_id );
+	$page_url = esc_url_raw( get_post_meta( $post_id, '_url_origem_net', true ) );
+	if ( ! $post || ! $page_url || false === stripos( $post->post_content, '<img' ) ) {
+		return array( 'localized' => 0, 'failed' => 0 );
+	}
+	libxml_use_internal_errors( true );
+	$document = new DOMDocument();
+	$document->loadHTML( '<?xml encoding="UTF-8"><div id="migrador-repair-root">' . $post->post_content . '</div>', LIBXML_NOERROR | LIBXML_NOWARNING );
+	$xpath = new DOMXPath( $document );
+	$container = $xpath->query( '//*[@id="migrador-repair-root"]' )->item( 0 );
+	if ( ! $container ) {
+		return array( 'localized' => 0, 'failed' => 0 );
+	}
+	$result = migrador_noticias_localize_container_images( $xpath, $container, $post_id, $page_url, $post->post_title );
+	if ( $result['localized'] || $result['failed'] ) {
+		wp_update_post( array( 'ID' => $post_id, 'post_content' => wp_kses_post( migrador_noticias_inner_html( $document, $container ) ) ) );
+	}
+	return $result;
 }
 
 function migrador_noticias_selector_to_xpath( $selector ) {
@@ -529,20 +609,28 @@ function migrador_noticias_import_single_url() {
 			wp_set_post_categories( $post_id, $category_data['ids'], false );
 		}
 
-		if ( $image_url && ! has_post_thumbnail( $post_id ) ) {
-			require_once ABSPATH . 'wp-admin/includes/media.php';
-			require_once ABSPATH . 'wp-admin/includes/file.php';
-			require_once ABSPATH . 'wp-admin/includes/image.php';
-			$attachment_id = media_sideload_image( $image_url, $post_id, $title, 'id' );
-			if ( ! is_wp_error( $attachment_id ) ) {
-				set_post_thumbnail( $post_id, (int) $attachment_id );
-				// A primeira imagem do conteúdo já virou a miniatura; as demais continuam no artigo.
+		// A primeira imagem segue como miniatura; todas as seguintes são localizadas no conteúdo.
+		$content_image_removed = false;
+		if ( $content_image_node && has_post_thumbnail( $post_id ) && $content_image_node->parentNode ) {
+			$content_image_node->parentNode->removeChild( $content_image_node );
+			$content_image_node = null;
+			$content_image_removed = true;
+		} elseif ( $image_url && ! has_post_thumbnail( $post_id ) ) {
+			$attachment_id = migrador_noticias_sideload_image( $image_url, $post_id, $title );
+			if ( $attachment_id ) {
+				set_post_thumbnail( $post_id, $attachment_id );
 				if ( $content_image_node && $content_image_node->parentNode ) {
 					$content_image_node->parentNode->removeChild( $content_image_node );
-					$content_without_thumbnail = migrador_noticias_inner_html( $document, $container );
-					wp_update_post( array( 'ID' => $post_id, 'post_content' => wp_kses_post( $content_without_thumbnail ) ) );
+					$content_image_node = null;
+					$content_image_removed = true;
 				}
+			} elseif ( $content_image_node ) {
+				$content_image_node->setAttribute( 'src', $image_url );
 			}
+		}
+		$inline_images = migrador_noticias_localize_container_images( $xpath, $container, $post_id, $url, $title, $content_image_node );
+		if ( $content_image_removed || $inline_images['localized'] || $inline_images['failed'] ) {
+			wp_update_post( array( 'ID' => $post_id, 'post_content' => wp_kses_post( migrador_noticias_inner_html( $document, $container ) ) ) );
 		}
 
 		migrador_noticias_finish_item( $url, true, array( 'post_id' => $post_id, 'title' => $title, 'sitemap_date' => $sitemap_date, 'content_type' => $content_type, 'author' => $author_data['name'], 'author_created' => $author_data['created'], 'categories' => $category_data['names'], 'categories_created' => $category_data['created'], 'categories_reused' => $category_data['reused'], 'http_code' => $http_code ) );
@@ -637,6 +725,57 @@ function migrador_noticias_process_url_category_repair() {
 	}
 }
 add_action( 'wp_ajax_migrador_noticias_process_url_category_repair', 'migrador_noticias_process_url_category_repair' );
+
+/** Estado da rotina que baixa imagens internas já presentes nos posts importados. */
+function migrador_noticias_image_repair_status() {
+	$queue     = migrador_noticias_read_state( 'image-repair-queue.json' );
+	$completed = migrador_noticias_read_state( 'image-repair-completed.json' );
+	return array( 'queue' => count( $queue ), 'completed' => count( $completed ), 'total' => count( $queue ) + count( $completed ) );
+}
+
+function migrador_noticias_prepare_image_repair() {
+	migrador_noticias_can_manage();
+	$post_ids = get_posts( array( 'post_type' => 'post', 'post_status' => 'any', 'meta_key' => '_url_origem_net', 'meta_compare' => 'EXISTS', 'fields' => 'ids', 'posts_per_page' => -1, 'orderby' => 'ID', 'order' => 'ASC' ) );
+	$queue = array();
+	foreach ( $post_ids as $post_id ) {
+		$post = get_post( $post_id );
+		if ( $post && false !== stripos( $post->post_content, '<img' ) ) {
+			$queue[] = array( 'post_id' => (int) $post_id );
+		}
+	}
+	migrador_noticias_write_state( 'image-repair-queue.json', $queue );
+	migrador_noticias_write_state( 'image-repair-completed.json', array() );
+	wp_send_json_success( array_merge( migrador_noticias_status(), array( 'message' => sprintf( '%d posts com imagens preparados para correção.', count( $queue ) ) ) ) );
+}
+add_action( 'wp_ajax_migrador_noticias_prepare_image_repair', 'migrador_noticias_prepare_image_repair' );
+
+function migrador_noticias_process_image_repair() {
+	migrador_noticias_can_manage();
+	$lock = migrador_noticias_acquire_lock();
+	if ( ! $lock ) {
+		wp_send_json_error( array( 'message' => 'Outro processo está em andamento.', 'busy' => true ), 409 );
+	}
+	try {
+		$queue = migrador_noticias_read_state( 'image-repair-queue.json' );
+		if ( empty( $queue ) ) {
+			migrador_noticias_release_lock( $lock );
+			wp_send_json_success( array_merge( migrador_noticias_status(), array( 'message' => 'Correção de imagens concluída.' ) ) );
+		}
+		$item = array_shift( $queue );
+		$post_id = ! empty( $item['post_id'] ) ? (int) $item['post_id'] : 0;
+		$result = $post_id ? migrador_noticias_localize_saved_post_images( $post_id ) : array( 'localized' => 0, 'failed' => 1 );
+		migrador_noticias_write_state( 'image-repair-queue.json', $queue );
+		$completed = migrador_noticias_read_state( 'image-repair-completed.json' );
+		$completed[] = array( 'post_id' => $post_id, 'localized' => $result['localized'], 'failed' => $result['failed'], 'date' => current_time( 'mysql' ) );
+		migrador_noticias_write_state( 'image-repair-completed.json', $completed );
+		migrador_noticias_release_lock( $lock );
+		wp_send_json_success( array_merge( migrador_noticias_status(), array( 'post_id' => $post_id, 'images_localized' => $result['localized'], 'images_failed' => $result['failed'] ) ) );
+	} catch ( Exception $exception ) {
+		migrador_noticias_release_lock( $lock );
+		wp_send_json_error( array_merge( migrador_noticias_status(), array( 'message' => $exception->getMessage() ) ), 422 );
+	}
+}
+add_action( 'wp_ajax_migrador_noticias_process_image_repair', 'migrador_noticias_process_image_repair' );
 
 function migrador_noticias_get_status() {
 	migrador_noticias_can_manage();

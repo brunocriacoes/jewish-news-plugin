@@ -5,6 +5,7 @@
   let paused = false;
   let consecutiveErrors = 0;
 	let urlCategoryRepairRunning = false;
+	let imageRepairRunning = false;
   let status = MigradorNoticias.initialStatus;
   let statusChart = null;
   const $ = (id) => document.getElementById(id);
@@ -51,8 +52,9 @@
     $('migrador-progress-bar').style.width = `${percent}%`;
     $('migrador-progress-text').textContent = `${processed} de ${total} processados`;
     $('migrador-progress-badge').textContent = `${percent}%`;
-    $('migrador-reprocess-errors').disabled = running || urlCategoryRepairRunning || !Number(status.errors || 0);
-	$('migrador-repair-url-categories').disabled = running || urlCategoryRepairRunning;
+    $('migrador-reprocess-errors').disabled = running || urlCategoryRepairRunning || imageRepairRunning || !Number(status.errors || 0);
+	$('migrador-repair-url-categories').disabled = running || urlCategoryRepairRunning || imageRepairRunning;
+	$('migrador-repair-images').disabled = running || urlCategoryRepairRunning || imageRepairRunning;
     window.atualizarDashboard(status.completed, status.errors, status.queue);
   }
 
@@ -65,17 +67,18 @@
   }
 
   function updateButtons() {
-	$('migrador-start').disabled = (running && !paused) || urlCategoryRepairRunning;
-	$('migrador-read-sitemap').disabled = running || urlCategoryRepairRunning;
+    $('migrador-start').disabled = (running && !paused) || urlCategoryRepairRunning || imageRepairRunning;
+	$('migrador-read-sitemap').disabled = running || urlCategoryRepairRunning || imageRepairRunning;
 	$('migrador-start').innerHTML = `<span class="dashicons dashicons-controls-play"></span>${paused && !running ? 'Retomar Importação' : '2. Iniciar Importação'}`;
     $('migrador-pause').disabled = !running;
     $('migrador-pause').textContent = paused ? 'Retomar' : 'Pausar';
-    $('migrador-reprocess-errors').disabled = running || urlCategoryRepairRunning || !Number(status.errors || 0);
-	$('migrador-repair-url-categories').disabled = running || urlCategoryRepairRunning;
+    $('migrador-reprocess-errors').disabled = running || urlCategoryRepairRunning || imageRepairRunning || !Number(status.errors || 0);
+	$('migrador-repair-url-categories').disabled = running || urlCategoryRepairRunning || imageRepairRunning;
+	$('migrador-repair-images').disabled = running || urlCategoryRepairRunning || imageRepairRunning;
   }
 
 	async function runUrlCategoryRepair() {
-		if (running || urlCategoryRepairRunning) return;
+		if (running || urlCategoryRepairRunning || imageRepairRunning) return;
 		urlCategoryRepairRunning = true;
 		updateButtons();
 		try {
@@ -98,6 +101,34 @@
 			log(`Erro ao corrigir categorias da URL: ${error.message || 'erro desconhecido'}`, 'error');
 		} finally {
 			urlCategoryRepairRunning = false;
+			updateButtons();
+		}
+	}
+
+	async function runImageRepair() {
+		if (running || urlCategoryRepairRunning || imageRepairRunning) return;
+		imageRepairRunning = true;
+		updateButtons();
+		try {
+			let data = await request('migrador_noticias_prepare_image_repair');
+			render(data);
+			log(data.message, 'success');
+			const total = Number(data.image_repair_total || 0);
+			while (Number(status.image_repair_queue || 0) > 0) {
+				data = await request('migrador_noticias_process_image_repair');
+				render(data);
+				const completed = Number(data.image_repair_completed || 0);
+				if (completed === 1 || completed % 25 === 0 || completed === total) {
+					log(`Imagens do conteúdo: ${completed} de ${total} posts processados.`);
+				}
+				await sleep(150);
+			}
+			log('Correção de imagens do conteúdo concluída.', 'success');
+		} catch (error) {
+			if (error.data) render(error.data);
+			log(`Erro ao corrigir imagens do conteúdo: ${error.message || 'erro desconhecido'}`, 'error');
+		} finally {
+			imageRepairRunning = false;
 			updateButtons();
 		}
 	}
@@ -142,6 +173,7 @@
     $('migrador-pause').addEventListener('click', () => { if (running && !paused) { paused = true; log('Pausa solicitada; a notícia atual será finalizada.'); } else if (paused) { runQueue(); } updateButtons(); });
     $('migrador-reprocess-errors').addEventListener('click', async () => { try { const data = await request('migrador_noticias_reprocess_errors'); render(data); log(data.message, 'success'); } catch (error) { log(`Não foi possível reprocessar erros: ${error.message || 'erro desconhecido'}`, 'error'); } });
 	$('migrador-repair-url-categories').addEventListener('click', runUrlCategoryRepair);
+	$('migrador-repair-images').addEventListener('click', runImageRepair);
     $('migrador-clear-log').addEventListener('click', () => { $('migrador-log').replaceChildren(); log('Log limpo.'); });
     $('migrador-download-errors').addEventListener('click', () => { window.location.href = `${MigradorNoticias.ajaxUrl}?action=migrador_noticias_download_errors&nonce=${encodeURIComponent(MigradorNoticias.nonce)}`; });
   });
