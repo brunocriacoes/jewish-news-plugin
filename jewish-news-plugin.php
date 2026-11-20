@@ -124,6 +124,19 @@ function migrador_noticias_is_legacy_url( $url ) {
 	return $url_host && $site_host && $url_host === $site_host;
 }
 
+/** Cria um índice das URLs de origem já associadas a posts ou páginas existentes. */
+function migrador_noticias_get_imported_source_urls() {
+	$post_ids = get_posts( array( 'post_type' => array( 'post', 'page' ), 'post_status' => array( 'publish', 'future', 'draft', 'pending', 'private' ), 'meta_key' => '_url_origem_net', 'meta_compare' => 'EXISTS', 'fields' => 'ids', 'posts_per_page' => -1 ) );
+	$urls = array();
+	foreach ( $post_ids as $post_id ) {
+		$url = esc_url_raw( get_post_meta( $post_id, '_url_origem_net', true ) );
+		if ( $url ) {
+			$urls[ $url ] = true;
+		}
+	}
+	return $urls;
+}
+
 /** Obtém os <loc> do sitemap e reinicia os estados da migração. */
 function migrador_noticias_read_sitemap() {
 	migrador_noticias_can_manage();
@@ -143,16 +156,24 @@ function migrador_noticias_read_sitemap() {
 	}
 
 	$urls = array();
+	$imported_urls = migrador_noticias_get_imported_source_urls();
+	$skipped = 0;
+	$valid_urls = 0;
 	foreach ( $xml->xpath( '//*[local-name()="url"]' ) as $url_node ) {
 		$loc_nodes = $url_node->xpath( './*[local-name()="loc"]' );
 		$lastmod_nodes = $url_node->xpath( './*[local-name()="lastmod"]' );
 		$url = ! empty( $loc_nodes ) ? esc_url_raw( trim( (string) $loc_nodes[0] ) ) : '';
 		if ( $url && filter_var( $url, FILTER_VALIDATE_URL ) && migrador_noticias_is_legacy_url( $url ) ) {
+			$valid_urls++;
+			if ( ! empty( $imported_urls[ $url ] ) ) {
+				$skipped++;
+				continue;
+			}
 			$urls[ $url ] = array( 'url' => $url, 'lastmod' => ! empty( $lastmod_nodes ) ? sanitize_text_field( trim( (string) $lastmod_nodes[0] ) ) : '' );
 		}
 	}
 	$urls = array_values( $urls );
-	if ( empty( $urls ) ) {
+	if ( ! $valid_urls ) {
 		wp_send_json_error( array( 'message' => 'Nenhuma URL válida foi encontrada no sitemap.' ), 422 );
 	}
 
@@ -160,7 +181,7 @@ function migrador_noticias_read_sitemap() {
 	migrador_noticias_write_state( 'completed.json', array() );
 	migrador_noticias_write_state( 'errors.json', array() );
 	@unlink( MIGRADOR_NOTICIAS_DATA_DIR . 'process.lock' );
-	wp_send_json_success( array_merge( migrador_noticias_status(), array( 'message' => count( $urls ) . ' URLs adicionadas à fila.' ) ) );
+	wp_send_json_success( array_merge( migrador_noticias_status(), array( 'message' => sprintf( '%1$d URLs novas adicionadas à fila; %2$d já importadas foram ignoradas.', count( $urls ), $skipped ) ) ) );
 }
 add_action( 'wp_ajax_migrador_noticias_read_sitemap', 'migrador_noticias_read_sitemap' );
 
