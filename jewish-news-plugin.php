@@ -95,6 +95,12 @@ function migrador_noticias_imported_images_count() {
 	return (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(DISTINCT post_id) FROM {$wpdb->postmeta} WHERE meta_key = %s", '_migrador_source_image_url' ) );
 }
 
+/** Total persistente de posts publicados pelo migrador, independentemente da fila atual. */
+function migrador_noticias_imported_posts_count() {
+	global $wpdb;
+	return (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(DISTINCT p.ID) FROM {$wpdb->posts} p INNER JOIN {$wpdb->postmeta} pm ON pm.post_id = p.ID WHERE pm.meta_key = %s AND p.post_type = 'post' AND p.post_status IN ('publish','future','draft','pending','private')", '_url_origem_net' ) );
+}
+
 function migrador_noticias_status() {
 	$queue     = migrador_noticias_read_state( 'queue.json' );
 	$completed = migrador_noticias_read_state( 'completed.json' );
@@ -121,6 +127,7 @@ function migrador_noticias_status() {
 		'image_repair_completed' => $image_repair['completed'],
 		'image_repair_total'     => $image_repair['total'],
 		'images_imported'        => migrador_noticias_imported_images_count(),
+		'posts_imported_total'   => migrador_noticias_imported_posts_count(),
 	);
 }
 

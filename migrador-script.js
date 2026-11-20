@@ -43,6 +43,7 @@
     $('migrador-total').textContent = total;
     $('migrador-queue').textContent = status.queue || 0;
     $('migrador-completed').textContent = status.completed || 0;
+	$('migrador-posts-imported').textContent = status.posts_imported_total || 0;
     $('migrador-errors').textContent = status.errors || 0;
     $('migrador-errors-action').textContent = status.errors || 0;
     $('migrador-categories-site-total').textContent = status.categories_site_total || 0;
