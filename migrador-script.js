@@ -24,14 +24,14 @@
     if (!window.Chart) return;
     statusChart = new Chart($('migrador-status-chart'), {
       type: 'doughnut',
-      data: { labels: ['Sucesso', 'Erros', 'Na fila'], datasets: [{ data: [0, 0, 0], backgroundColor: ['#16803b', '#b42318', '#1769aa'], borderWidth: 0 }] },
+      data: { labels: ['Sucesso', 'Erros', 'Na fila', 'Mídias locais'], datasets: [{ data: [0, 0, 0, 0], backgroundColor: ['#16803b', '#b42318', '#1769aa', '#998337'], borderWidth: 0 }] },
       options: { maintainAspectRatio: false, cutout: '68%', plugins: { legend: { display: false }, tooltip: { padding: 10 } } }
     });
   }
 
-  window.atualizarDashboard = function (sucesso, erros, fila) {
+  window.atualizarDashboard = function (sucesso, erros, fila, midias) {
     if (!statusChart) return;
-    statusChart.data.datasets[0].data = [Number(sucesso || 0), Number(erros || 0), Number(fila || 0)];
+    statusChart.data.datasets[0].data = [Number(sucesso || 0), Number(erros || 0), Number(fila || 0), Number(midias || 0)];
     statusChart.update();
   };
 
@@ -49,13 +49,14 @@
     $('migrador-categories-existing').textContent = status.categories_existing || 0;
     $('migrador-categories-pending').textContent = status.categories_pending || 0;
     $('migrador-categories-existing-footer').textContent = status.categories_existing || 0;
+	$('migrador-images-imported').textContent = status.images_imported || 0;
     $('migrador-progress-bar').style.width = `${percent}%`;
     $('migrador-progress-text').textContent = `${processed} de ${total} processados`;
     $('migrador-progress-badge').textContent = `${percent}%`;
     $('migrador-reprocess-errors').disabled = running || urlCategoryRepairRunning || imageRepairRunning || !Number(status.errors || 0);
 	$('migrador-repair-url-categories').disabled = running || urlCategoryRepairRunning || imageRepairRunning;
 	$('migrador-repair-images').disabled = running || urlCategoryRepairRunning || imageRepairRunning;
-    window.atualizarDashboard(status.completed, status.errors, status.queue);
+    window.atualizarDashboard(status.completed, status.errors, status.queue, status.images_imported);
   }
 
   async function request(action, extra = {}) {

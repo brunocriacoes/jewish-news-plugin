@@ -89,6 +89,12 @@ function migrador_noticias_get_post_dates( $lastmod ) {
 	);
 }
 
+/** Total de arquivos de mídia cuja origem foi registrada pelo migrador. */
+function migrador_noticias_imported_images_count() {
+	global $wpdb;
+	return (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(DISTINCT post_id) FROM {$wpdb->postmeta} WHERE meta_key = %s", '_migrador_source_image_url' ) );
+}
+
 function migrador_noticias_status() {
 	$queue     = migrador_noticias_read_state( 'queue.json' );
 	$completed = migrador_noticias_read_state( 'completed.json' );
@@ -114,6 +120,7 @@ function migrador_noticias_status() {
 		'image_repair_queue'     => $image_repair['queue'],
 		'image_repair_completed' => $image_repair['completed'],
 		'image_repair_total'     => $image_repair['total'],
+		'images_imported'        => migrador_noticias_imported_images_count(),
 	);
 }
 
